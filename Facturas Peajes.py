@@ -1,5 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+import os
 import re
 import pandas as pd
 import pdfplumber
@@ -73,25 +75,47 @@ class AppPeajes:
     def __init__(self, root):
         self.root = root
         self.root.title("Extractor de Facturas de Peajes")
-        self.root.geometry("400x250")
-        self.root.eval('tk::PlaceWindow . center') # Centrar en pantalla
+        self.root.geometry("600x450") # Ventana más grande para las miniaturas
+        self.root.eval('tk::PlaceWindow . center') # Centrado de ventana
         
         self.rutas_pdfs = []
+        self.imagenes_referencia = [] # Lista vital para que Tkinter no borre las imágenes de la memoria
 
         # Título
         tk.Label(root, text="Procesador de Peajes", font=("Arial", 14, "bold")).pack(pady=10)
 
-        # Botón para cargar PDFs
-        self.btn_cargar = tk.Button(root, text="1. Cargar facturas (PDF)", command=self.cargar_archivos, width=25, height=2)
-        self.btn_cargar.pack(pady=10)
+        # Frame para alinear los botones
+        frame_botones = tk.Frame(root)
+        frame_botones.pack(pady=5)
 
-        # Etiqueta de estado
+        self.btn_cargar = tk.Button(frame_botones, text="1. Cargar facturas (PDF)", command=self.cargar_archivos, width=22, height=2)
+        self.btn_cargar.pack(side=tk.LEFT, padx=10)
+
+        self.btn_procesar = tk.Button(frame_botones, text="2. Procesar y Guardar Excel", command=self.procesar_archivos, width=22, height=2, state=tk.DISABLED)
+        self.btn_procesar.pack(side=tk.LEFT, padx=10)
+
         self.lbl_estado = tk.Label(root, text="Ningún archivo seleccionado.", fg="gray")
         self.lbl_estado.pack(pady=5)
 
-        # Botón para procesar y guardar
-        self.btn_procesar = tk.Button(root, text="2. Procesar y Guardar Excel", command=self.procesar_archivos, width=25, height=2, state=tk.DISABLED)
-        self.btn_procesar.pack(pady=10)
+        # Zona de Miniaturas (Canvas con Scroll)
+        marco_exterior = tk.Frame(root, bd=2, relief="sunken")
+        marco_exterior.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+
+        self.canvas = tk.Canvas(marco_exterior, highlightthickness=0)
+        self.scrollbar = tk.Scrollbar(marco_exterior, orient="horizontal", command=self.canvas.xview)
+        self.frame_miniaturas = tk.Frame(self.canvas)
+
+        # Configurar el scroll automático
+        self.frame_miniaturas.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        self.canvas.create_window((0, 0), window=self.frame_miniaturas, anchor="nw")
+        self.canvas.configure(xscrollcommand=self.scrollbar.set)
+
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+
 
     def cargar_archivos(self):
         archivos = filedialog.askopenfilenames(
@@ -102,13 +126,62 @@ class AppPeajes:
             self.rutas_pdfs = list(archivos)
             cantidad = len(self.rutas_pdfs)
             self.lbl_estado.config(text=f"{cantidad} archivo(s) seleccionado(s).", fg="green")
-            self.btn_procesar.config(state=tk.NORMAL) # Habilitar el segundo botón
+            self.btn_procesar.config(state=tk.NORMAL)
+            
+            # Generar las miniaturas visuales
+            self.mostrar_miniaturas()
+
+    def mostrar_miniaturas(self):
+        # Limpiar miniaturas anteriores
+        for widget in self.frame_miniaturas.winfo_children():
+            widget.destroy()
+        self.imagenes_referencia.clear()
+
+        # Poner cursor de carga mientras dibuja
+        self.root.config(cursor="watch")
+        self.root.update()
+
+        for ruta in self.rutas_pdfs:
+            nombre_archivo = os.path.basename(ruta)
+            
+            # Contenedor individual para cada PDF
+            item_frame = tk.Frame(self.frame_miniaturas, bd=1, relief="solid", bg="white")
+            item_frame.pack(side=tk.LEFT, padx=10, pady=10)
+
+            try:
+                with pdfplumber.open(ruta) as pdf:
+                    # Extraer la imagen de la primera página a baja resolución (para que cargue rápido)
+                    img_cruda = pdf.pages[0].to_image(resolution=50).original
+                    
+                    # Recortar/Redimensionar a tamaño miniatura (100x140 píxeles aprox)
+                    img_cruda.thumbnail((120, 160))
+                    foto_tk = ImageTk.PhotoImage(img_cruda)
+                    
+                    # Guardar referencia para que el recolector de basura de Python no la borre
+                    self.imagenes_referencia.append(foto_tk) 
+
+                    lbl_img = tk.Label(item_frame, image=foto_tk, bg="white")
+                    lbl_img.pack(padx=5, pady=5)
+            except Exception as e:
+                # Si un PDF está dañado y no se puede renderizar, muestra un cuadro gris
+                lbl_img = tk.Label(item_frame, text="Sin vista\nprevia", width=15, height=8, bg="#e0e0e0")
+                lbl_img.pack(padx=5, pady=5)
+
+            # Etiqueta con el nombre del archivo (acortado si es muy largo)
+            if len(nombre_archivo) > 18:
+                nombre_corto = nombre_archivo[:12] + "..." + nombre_archivo[-4:]
+            else:
+                nombre_corto = nombre_archivo
+                
+            lbl_txt = tk.Label(item_frame, text=nombre_corto, font=("Arial", 8), bg="white")
+            lbl_txt.pack(side=tk.BOTTOM, pady=(0, 5))
+
+        self.root.config(cursor="") # Restaurar cursor
 
     def procesar_archivos(self):
         if not self.rutas_pdfs:
             return
 
-        # Preguntar dónde guardar el archivo Excel
         archivo_salida = filedialog.asksaveasfilename(
             title="Guardar Excel como...",
             defaultextension=".xlsx",
@@ -118,7 +191,6 @@ class AppPeajes:
 
         if archivo_salida:
             try:
-                # Cambiar cursor a estado de carga
                 self.root.config(cursor="watch")
                 self.root.update()
 
@@ -126,17 +198,21 @@ class AppPeajes:
                 
                 messagebox.showinfo("Éxito", f"¡Proceso completado!\n\nEl archivo se guardó en:\n{archivo_salida}")
                 
-                # Reiniciar estado
+                # Reiniciar estado de la app después del éxito
                 self.rutas_pdfs = []
                 self.lbl_estado.config(text="Ningún archivo seleccionado.", fg="gray")
                 self.btn_procesar.config(state=tk.DISABLED)
+                for widget in self.frame_miniaturas.winfo_children():
+                    widget.destroy()
+                self.imagenes_referencia.clear()
 
             except Exception as e:
                 messagebox.showerror("Error", f"Ocurrió un error al procesar las facturas:\n{str(e)}")
             finally:
                 self.root.config(cursor="")
 
-# Ejecución de la App
+# Ejecución de la app
+
 if __name__ == "__main__":
     ventana = tk.Tk()
     app = AppPeajes(ventana)
